@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🤩 = 👆🏼 + 🐍</title>
+  <meta name="description" content="AR snake that follows your hand via webcam, powered by MediaPipe and p5.js" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: black; overflow: hidden; font-family: 'Roboto', sans-serif; }
+    canvas { display: block; }
+
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: black;
+      color: #0f0;
+      font-family: 'Roboto', sans-serif;
+      font-size: 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      z-index: 10;
+    }
+    #loading .title { font-size: 28px; font-weight: 500; letter-spacing: 2px; }
+    #loading .sub { font-size: 14px; color: rgba(0,255,0,0.7); }
+    #loading .dot { animation: blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    #hint {
+      position: fixed;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(0,255,0,0.75);
+      font-family: 'Roboto', sans-serif;
+      font-size: clamp(36px, 8vw, 72px);
+      font-weight: 500;
+      line-height: 1.05;
+      text-align: center;
+      width: min(1100px, calc(100vw - 32px));
+      white-space: normal;
+      pointer-events: none;
+      transition: opacity 0.5s;
+      z-index: 5;
+    }
+    #hint-text {
+      display: inline-block;
+      transition: opacity 0.3s;
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="title">🤩 = 👆🏼 + 🐍</div>
+  <div class="sub">Allowing camera access<span class="dot">...</span></div>
+</div>
+
+<div id="hint"><span id="hint-text"></span></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<script>
+let video;
+let handResults = null;
+let hintTimer = null;
+let startupTimeout = null;
+let trackingStarted = false;
+let trackingInFlight = false;
+let snakeFirstSeenAt = null;
+let starRainStarted = false;
+let starRainStartedAt = null;
+let starRainFinished = false;
+let fallingStars = [];
+let previousHead = null;
+let eyeLook = { x: 0, y: 0 };
+const targetRadius = 38;
+const targetPosition = { x: 0.32, y: 0.32 };
+
+function setLoadingMessage(message) {
+  const loadingSub = document.querySelector('#loading .sub');
+  if (loadingSub) loadingSub.textContent = message;
+}
+
+function showStartupError(message) {
+  const loading = document.getElementById('loading');
+  if (loading) loading.style.display = 'flex';
+  setLoadingMessage(message);
+}
+
+const handsDetector = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+handsDetector.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.5
+});
+
+handsDetector.onResults((results) => {
+  handResults = results;
+  if (
+    snakeFirstSeenAt === null &&
+    results.multiHandLandmarks &&
+    results.multiHandLandmarks.length > 0
+  ) {
+    snakeFirstSeenAt = performance.now();
+  }
+});
+
+async function sendTrackingFrame() {
+  if (!video || !video.elt || trackingInFlight) return;
+  trackingInFlight = true;
+  try {
+    await handsDetector.send({ image: video.elt });
+  } catch (error) {
+    console.error('Hand tracking failed.', error);
+    showStartupError('Hand tracking failed. Refresh the page to try again.');
+  } finally {
+    trackingInFlight = false;
+  }
+}
+
+function startTrackingLoop() {
+  if (trackingStarted) return;
+  trackingStarted = true;
+
+  async function loop() {
+    await sendTrackingFrame();
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+}
+
+new p5(function(p) {
+
+  class FallingStar {
+    constructor() {
+      this.reset(true);
+    }
+
+    reset(startAboveScreen) {
+      this.x = p.random(0, p.width);
+      this.y = startAboveScreen ? p.random(-p.height, 0) : p.random(-120, -20);
+      this.speed = p.random(2.5, 7);
+      this.drift = p.random(-0.8, 0.8);
+      this.size = p.random(22, 48);
+      this.spin = p.random(0, p.TWO_PI);
+      this.spinSpeed = p.random(-0.05, 0.05);
+      this.alpha = p.random(170, 255);
+      this.twinkleOffset = p.random(0, p.TWO_PI);
+    }
+
+    update() {
+      this.x += this.drift;
+      this.y += this.speed;
+      this.spin += this.spinSpeed;
+      if (this.y > p.height + 80) this.reset(false);
+    }
+
+    draw() {
+      const twinkle = (p.sin(p.frameCount * 0.14 + this.twinkleOffset) + 1) / 2;
+      const glowSize = this.size * p.lerp(1.4, 2.2, twinkle);
+      const rayLength = this.size * p.lerp(0.45, 0.9, twinkle);
+
+      p.push();
+      p.translate(this.x, this.y);
+      p.rotate(this.spin);
+      p.noStroke();
+      p.textAlign(p.CENTER, p.CENTER);
+
+      p.fill(255, 245, 120, this.alpha * p.lerp(0.08, 0.22, twinkle));
+      p.circle(0, 0, glowSize);
+
+      p.stroke(255, 255, 210, this.alpha * p.lerp(0.25, 0.75, twinkle));
+      p.strokeWeight(1.5);
+      p.line(-rayLength, 0, rayLength, 0);
+      p.line(0, -rayLength, 0, rayLength);
+
+      p.noStroke();
+      p.textSize(this.size);
+      p.fill(255, 225, 0, this.alpha * 0.35);
+      p.text('★', 2, 3);
+      p.fill(255, 238, 40, this.alpha);
+      p.text('★', 0, 0);
+      p.pop();
+    }
+  }
+
+  function startStarRain() {
+    if (starRainStarted) return;
+    starRainStarted = true;
+    starRainStartedAt = p.millis();
+    fallingStars = Array.from({ length: 60 }, () => new FallingStar());
+  }
+
+  p.setup = function() {
+    p.createCanvas(p.windowWidth, p.windowHeight);
+
+    startupTimeout = setTimeout(() => {
+      showStartupError('Camera unavailable. Check browser permissions and refresh.');
+    }, 12000);
+
+    video = p.createCapture(p.VIDEO, function() {
+      if (startupTimeout) clearTimeout(startupTimeout);
+      document.getElementById('loading').style.display = 'none';
+      startTrackingLoop();
+
+      // Show step-by-step hints
+      const hints = [
+        '👆🏼 Raise your finger',
+        '🐍 Watch the snake follow your hand!',
+      ];
+      let hintIndex = 0;
+      const hintEl = document.getElementById('hint');
+      const hintText = document.getElementById('hint-text');
+
+      function showNextHint() {
+        if (hintIndex >= hints.length) {
+          hintEl.style.opacity = '0';
+          return;
+        }
+        hintEl.style.opacity = '1';
+        hintText.style.opacity = '0';
+        setTimeout(() => {
+          hintText.textContent = hints[hintIndex];
+          hintText.style.opacity = '1';
+          hintIndex++;
+          hintTimer = setTimeout(showNextHint, 2500);
+        }, 300);
+      }
+      showNextHint();
+    });
+
+    video.elt.addEventListener('error', () => {
+      showStartupError('Camera unavailable. Check browser permissions and refresh.');
+    });
+
+    video.size(p.windowWidth, p.windowHeight);
+    video.hide();
+  };
+
+  p.windowResized = function() {
+    p.resizeCanvas(p.windowWidth, p.windowHeight);
+    if (video) video.size(p.windowWidth, p.windowHeight);
+  };
+
+  p.draw = function() {
+    p.clear();
+
+    // Mirror video
+    p.push();
+    p.translate(p.width, 0);
+    p.scale(-1, 1);
+    p.image(video, 0, 0, p.width, p.height);
+    p.pop();
+
+    const hasHand = handResults && handResults.multiHandLandmarks && handResults.multiHandLandmarks.length > 0;
+    let currentHead = null;
+    const targetVisible = snakeFirstSeenAt !== null &&
+      !starRainStarted &&
+      !starRainFinished &&
+      performance.now() - snakeFirstSeenAt >= 15000;
+
+    if (hasHand) {
+      const lm = handResults.multiHandLandmarks[0];
+
+      const raw = [
+        [lm[0].x * p.width, lm[0].y * p.height], // wrist
+        [lm[2].x * p.width, lm[2].y * p.height], // thumb
+        [lm[5].x * p.width, lm[5].y * p.height], // finger base
+        [lm[6].x * p.width, lm[6].y * p.height], // first knuckle
+        [lm[7].x * p.width, lm[7].y * p.height], // second knuckle
+      ];
+
+      // Mirror correction
+      const points = raw.map(pt => [p.width - pt[0], pt[1]]);
+
+      // Body
+      p.noFill();
+      p.strokeCap(p.ROUND);
+      p.strokeJoin(p.ROUND);
+
+      const total = points.length;
+      for (let i = 0; i < total - 1; i++) {
+        let t = i / total;
+        p.strokeWeight(p.lerp(18, 3, t));
+        p.stroke(0, p.lerp(160, 80, t), 0);
+        p.line(points[i][0], points[i][1], points[i+1][0], points[i+1][1]);
+      }
+
+      // Head
+      const head = points[total - 1];
+      currentHead = head;
+
+      if (previousHead) {
+        const movementX = p.constrain((head[0] - previousHead[0]) * 0.22, -5, 5);
+        const movementY = p.constrain((head[1] - previousHead[1]) * 0.22, -5, 5);
+        eyeLook.x = p.lerp(eyeLook.x, movementX, 0.28);
+        eyeLook.y = p.lerp(eyeLook.y, movementY, 0.28);
+      }
+      previousHead = [head[0], head[1]];
+
+      p.noStroke();
+      p.fill(0, 130, 0);
+      p.circle(head[0], head[1], 30);
+
+      // Eye
+      const eye = [head[0] + 4, head[1] - 7];
+      p.fill(0, 235, 235);
+      p.circle(eye[0], eye[1], 15);
+      p.fill(0);
+      p.circle(eye[0] + eyeLook.x, eye[1] + eyeLook.y, 6);
+      p.fill(255);
+      p.circle(eye[0] + eyeLook.x + 2, eye[1] + eyeLook.y - 2, 2.5);
+
+      // Tongue
+      const tip = [p.width - lm[8].x * p.width, lm[8].y * p.height];
+      p.stroke(200, 0, 0);
+      p.strokeWeight(2);
+      p.line(head[0], head[1], tip[0], tip[1]);
+      const tongueAngle = p.atan2(tip[1] - head[1], tip[0] - head[0]);
+      const forkAngle = p.radians(20);
+      const forkLength = 12;
+      p.line(
+        tip[0],
+        tip[1],
+        tip[0] + p.cos(tongueAngle - forkAngle) * forkLength,
+        tip[1] + p.sin(tongueAngle - forkAngle) * forkLength
+      );
+      p.line(
+        tip[0],
+        tip[1],
+        tip[0] + p.cos(tongueAngle + forkAngle) * forkLength,
+        tip[1] + p.sin(tongueAngle + forkAngle) * forkLength
+      );
+    } else {
+      previousHead = null;
+      eyeLook.x = p.lerp(eyeLook.x, 0, 0.18);
+      eyeLook.y = p.lerp(eyeLook.y, 0, 0.18);
+    }
+
+    if (targetVisible) {
+      const targetX = p.width * targetPosition.x;
+      const targetY = p.height * targetPosition.y;
+      p.noStroke();
+      p.fill(220, 0, 0);
+      p.circle(targetX, targetY, targetRadius * 2);
+
+      if (currentHead && p.dist(currentHead[0], currentHead[1], targetX, targetY) <= targetRadius + 15) {
+        startStarRain();
+      }
+    }
+
+    if (starRainStarted) {
+      if (p.millis() - starRainStartedAt >= 10000) {
+        starRainStarted = false;
+        starRainFinished = true;
+        fallingStars = [];
+        return;
+      }
+      for (const star of fallingStars) {
+        star.update();
+        star.draw();
+      }
+    }
+  };
+});
+</script>
+</body>
+</html>
